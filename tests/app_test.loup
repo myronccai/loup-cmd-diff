@@ -4,22 +4,30 @@
 # normal output and error messages.
 
 from debug.assert import (expectEq);
-from appinfo import (EXIT_OK, EXIT_USAGE);
+from appinfo import (EXIT_SAME, EXIT_DIFFERENT, EXIT_TROUBLE);
 from cli.app import (run);
 
 func test_version_succeeds(): void {
-    expectEq(run(["--version"]), EXIT_OK, "--version");
+    expectEq(run(["--version"]), EXIT_SAME, "--version");
 }
 
-func test_hello_succeeds(): void {
-    expectEq(run(["hello", "tests"]), EXIT_OK, "hello NAME");
+func test_help_succeeds(): void {
+    expectEq(run(["--help"]), EXIT_SAME, "--help");
 }
 
-func test_unknown_command_is_usage_error(): void {
-    expectEq(run(["bogus"]), EXIT_USAGE, "unknown command");
+func test_same_files(): void {
+    expectEq(run(["tests/fixtures/old.txt", "tests/fixtures/old.txt"]), EXIT_SAME, "same");
 }
 
-func test_missing_command_is_usage_error(): void {
-    let none: list[string] = [];
-    expectEq(run(none), EXIT_USAGE, "no command");
+func test_different_files(): void {
+    expectEq(run(["-u", "tests/fixtures/old.txt", "tests/fixtures/new.txt"]), EXIT_DIFFERENT, "different");
+}
+
+func test_missing_file_is_trouble(): void {
+    expectEq(run(["tests/fixtures/none.txt", "tests/fixtures/old.txt"]), EXIT_TROUBLE, "missing");
+}
+
+func test_usage_error_is_trouble(): void {
+    expectEq(run(["tests/fixtures/old.txt"]), EXIT_TROUBLE, "one operand");
+    expectEq(run(["-k", "a", "b"]), EXIT_TROUBLE, "unknown option");
 }

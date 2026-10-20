@@ -1,0 +1,78 @@
+@mode(host.dual)
+
+# diff: resolves the two operands (files, directories or "-" for standard
+# input), compares them, and prints the report.
+
+from appinfo import (APP_NAME);
+from cli.args import (Options);
+from commands.compare import (Report, new_report, fail, compare_files, compare_dirs, join_path, base_name, kind_mismatch);
+from io.fs import (isDir);
+
+# Whether operand `path` can be read; records GNU's message if not.
+func check_operand(edits r: Report, path: string): bool {
+    if (path == "-" or exists(path)) {
+        return true;
+    }
+    fail(edits: r, i"{$ path $}: No such file or directory");
+    return false;
+}
+
+# Compares the two operands and returns everything diff would print.
+pub func diff_paths(opts: Options): Report {
+    var r = new_report();
+    var path0 = opts.operands[0];
+    var path1 = opts.operands[1];
+    let ok0 = check_operand(edits: r, path0);
+    let ok1 = check_operand(edits: r, path1);
+    if (!ok0 or !ok1) {
+        return r;
+    }
+
+    let dir0 = path0 != "-" and isDir(path0);
+    let dir1 = path1 != "-" and isDir(path1);
+    if (dir0 and dir1) {
+        compare_dirs(edits: r, opts, path0, path1);
+        return r;
+    }
+    if (dir0 or dir1) {
+        # A file and a directory: compare the file with the directory's
+        # entry of the same name.
+        let file = if (dir0) { path1 } else { path0 };
+        if (file == "-") {
+            fail(edits: r, "cannot compare '-' to a directory");
+            return r;
+        }
+        if (dir0) {
+            path0 = join_path(path0, base_name(path1));
+        } else {
+            path1 = join_path(path1, base_name(path0));
+        }
+        if (!check_operand(edits: r, if (dir0) { path0 } else { path1 })) {
+            return r;
+        }
+        let sub0 = isDir(path0);
+        let sub1 = isDir(path1);
+        if (sub0 != sub1) {
+            r.out.push(kind_mismatch(path0, sub0, path1));
+            r.status = 1;
+            return r;
+        }
+        if (sub0 and sub1) {
+            compare_dirs(edits: r, opts, path0, path1);
+            return r;
+        }
+    }
+    compare_files(edits: r, opts, path0, path1, false);
+    return r;
+}
+
+pub func run_diff(opts: Options): int {
+    let r = diff_paths(opts);
+    if (r.out.len() > 0) {
+        print(r.out.join(""));
+    }
+    for (message in r.err) {
+        printErr(i"{$ APP_NAME $}: {$ message $}");
+    }
+    return r.status;
+}

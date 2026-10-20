@@ -1,0 +1,55 @@
+@mode(host.dual)
+
+from debug.assert import (expect, expectEq);
+from engine.lines import (split_text, line_key, keys_of, classify, make_ignore);
+
+func test_split_complete_lines(): void {
+    let t = split_text("a\nb\n");
+    expectEq(t.lines.len(), 2, "two lines");
+    expect(!t.missing_newline, "ends with a newline");
+}
+
+func test_split_missing_newline(): void {
+    let t = split_text("a\nb");
+    expectEq(t.lines.len(), 2, "two lines");
+    expectEq(t.lines[1], "b", "last line");
+    expect(t.missing_newline, "no newline at the end");
+}
+
+func test_split_empty_and_blank(): void {
+    expectEq(split_text("").lines.len(), 0, "empty file");
+    expectEq(split_text("\n").lines.len(), 1, "one blank line");
+    expectEq(split_text("\n\n").lines[1], "", "blank lines kept");
+}
+
+func test_exact_keys_include_the_newline(): void {
+    let exact = make_ignore(false, false, false);
+    expectEq(line_key("y", true, exact), "y\n", "complete line");
+    expectEq(line_key("y", false, exact), "y", "last line without newline");
+}
+
+func test_ignore_case(): void {
+    expectEq(line_key("Hello", true, make_ignore(true, false, false)), "hello\n", "-i");
+}
+
+func test_ignore_all_space(): void {
+    let w = make_ignore(false, true, false);
+    expectEq(line_key(" a \t b ", true, w), "ab", "-w drops all white space");
+    expectEq(line_key("ab", false, w), "ab", "-w ignores the missing newline");
+}
+
+func test_ignore_space_change(): void {
+    let b = make_ignore(false, false, true);
+    expectEq(line_key("a  \t b  ", true, b), "a b", "-b collapses runs and drops trailing space");
+    expectEq(line_key("  a", true, b), " a", "-b keeps leading space as one blank");
+    expect(line_key("a b", true, b) != line_key("ab", true, b), "-b: space differs from none");
+}
+
+func test_classify_shares_numbers(): void {
+    let exact = make_ignore(false, false, false);
+    let c = classify(keys_of(split_text("x\ny\nx\n"), exact), keys_of(split_text("y\nz\n"), exact));
+    expectEq(c.a[0], c.a[2], "equal lines in one file");
+    expectEq(c.a[1], c.b[0], "equal lines across files");
+    expect(c.b[1] != c.a[0] and c.b[1] != c.a[1], "a new line gets a new number");
+    expectEq(c.count, 4, "three classes, numbered from 1");
+}

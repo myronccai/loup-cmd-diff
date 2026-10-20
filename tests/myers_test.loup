@@ -1,0 +1,67 @@
+@mode(host.dual)
+
+from debug.assert import (expect, expectEq);
+from engine.myers import (Change, diff_sequences, shift_boundaries);
+
+func run(a: list[int], b: list[int]): list[Change] {
+    return diff_sequences(a, b, a, b, 10, 0);
+}
+
+func describe(cs: list[Change]): string {
+    var parts: list[string] = [];
+    for (c in cs) {
+        parts.push(i"{$ c.line0 $}:{$ c.deleted $}/{$ c.line1 $}:{$ c.inserted $}");
+    }
+    return parts.join(" ");
+}
+
+func test_equal_sequences(): void {
+    expectEq(run([1, 2, 3], [1, 2, 3]).len(), 0, "no changes");
+    let none: list[int] = [];
+    expectEq(run(none, none).len(), 0, "two empty sequences");
+}
+
+func test_insert_and_delete(): void {
+    let none: list[int] = [];
+    expectEq(describe(run(none, [1, 2])), "0:0/0:2", "insert into empty");
+    expectEq(describe(run([1, 2], none)), "0:2/0:0", "delete everything");
+    expectEq(describe(run([1, 2, 3], [1, 3])), "1:1/1:0", "delete the middle");
+    expectEq(describe(run([1, 3], [1, 2, 3])), "1:0/1:1", "insert in the middle");
+}
+
+func test_change_is_one_hunk(): void {
+    expectEq(describe(run([1, 2, 3], [1, 4, 3])), "1:1/1:1", "replace one line");
+    expectEq(describe(run([1, 2, 3, 4], [5, 2, 6, 4])), "0:1/0:1 2:1/2:1", "two separate changes");
+}
+
+func test_shortest_edit_script(): void {
+    # The classic example from Myers' paper: ABCABBA -> CBABAC needs 5 edits.
+    let cs = run([1, 2, 3, 1, 2, 2, 1], [3, 2, 1, 2, 1, 3]);
+    var total = 0;
+    for (c in cs) {
+        total += c.deleted + c.inserted;
+    }
+    expectEq(total, 5, "D = 5");
+}
+
+func test_insertions_slide_down(): void {
+    # Inserting a copy of a repeated line: GNU reports it after the run.
+    expectEq(describe(run([1, 2, 2, 3], [1, 2, 2, 2, 3])), "3:0/3:1", "after the run");
+    expectEq(describe(run([1, 2, 1, 2], [1, 2, 1, 2, 1, 2])), "4:0/4:2", "repeated pair goes last");
+}
+
+func test_shift_boundaries_moves_run_down(): void {
+    # Line 1 (a 2) is marked deleted in [1, 2, 2]; the equivalent last
+    # position is preferred. Flags have a sentinel before and two after.
+    var changed = [false, false, true, false, false, false];
+    let other = [false, false, false, false, false];
+    shift_boundaries(edits: changed, other, [1, 2, 2]);
+    expect(!changed[2] and changed[3], "moved to the last 2");
+}
+
+func test_ignored_lines_use_exact_prefix(): void {
+    # With exact classes differing at the end, the shared tail is not
+    # stripped, so the insertion can slide to the end as in GNU diff.
+    let cs = diff_sequences([1, 2, 1], [1, 2, 1, 2, 1], [1, 2, 3], [1, 2, 1, 2, 4], 5, 0);
+    expectEq(describe(cs), "3:0/3:2", "insertion at the end");
+}

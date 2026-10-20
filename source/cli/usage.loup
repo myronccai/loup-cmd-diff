@@ -1,28 +1,35 @@
 @mode(host.dual)
 
-from appinfo import (APP_NAME, APP_VERSION, APP_SUMMARY);
-from cli.args import (DEFAULT_GREETING);
+from appinfo import (APP_NAME, APP_VERSION);
 
 pub func usage(): string {
     let lines = [
-        i"usage: {$ APP_NAME $} [OPTIONS] COMMAND [ARGS...]",
+        i"Usage: {$ APP_NAME $} [OPTION]... FILE1 FILE2",
+        "Compare FILES line by line.",
         "",
-        APP_SUMMARY,
+        "  -q, --brief                   report only when files differ",
+        "  -s, --report-identical-files  report when two files are the same",
+        "      --normal                  output a normal diff (the default)",
+        "  -u, -U NUM, --unified[=NUM]   output NUM (default 3) lines of unified context",
+        "      --label LABEL             use LABEL instead of file name and timestamp",
+        "                                  (can be repeated)",
         "",
-        "Commands:",
-        "  hello [NAME]          Print a greeting (NAME defaults to 'world')",
-        "  help                  Show this help",
+        "  -r, --recursive               recursively compare any subdirectories found",
         "",
-        "Options:",
-        i"  -g, --greeting TEXT   Greeting used by 'hello' (default: {$ DEFAULT_GREETING $})",
-        "      --shout           Print the greeting in upper case",
-        "  -v, --verbose         Print diagnostic messages to stderr",
-        "  -h, --help            Show this help and exit",
-        "  -V, --version         Show the version and exit",
+        "  -i, --ignore-case             ignore case differences in file contents",
+        "  -b, --ignore-space-change     ignore changes in the amount of white space",
+        "  -w, --ignore-all-space        ignore all white space",
+        "",
+        "      --help                    display this help and exit",
+        "      --version                 output version information and exit",
+        "",
+        "FILES are 'FILE1 FILE2' or 'DIR1 DIR2' or 'DIR FILE' or 'FILE DIR'.",
+        "If a FILE is '-', read standard input.",
+        "Exit status is 0 if inputs are the same, 1 if different, 2 if trouble.",
     ];
     return lines.join("\n");
 }
 
 pub func version_line(): string {
-    return i"{$ APP_NAME $} {$ APP_VERSION $}";
+    return i"{$ APP_NAME $} (loup-cmd-{$ APP_NAME $}) {$ APP_VERSION $}";
 }

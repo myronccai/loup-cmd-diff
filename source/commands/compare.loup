@@ -1,0 +1,257 @@
+@mode(host.dual)
+
+# Comparing a pair of files, or a pair of directories entry by entry. The
+# results go into a Report (standard output pieces, error lines and the exit
+# status) instead of being printed, so tests can inspect them.
+
+from appinfo import (EXIT_SAME, EXIT_DIFFERENT, EXIT_TROUBLE);
+from cli.args import (Options);
+from engine.lines import (Text, Ignore, make_ignore, split_text, keys_of, classify);
+from engine.myers import (Change, diff_sequences);
+from engine.format import (normal_output, unified_output);
+from io.fs import (isDir, listDir);
+
+pub struct Report {
+    pub var out: list[string];   # standard output, in pieces
+    pub var err: list[string];   # error messages, one per line, without "diff: "
+    pub var status: int;         # 0 same, 1 different, 2 trouble
+}
+
+pub func new_report(): Report {
+    let none: list[string] = [];
+    return Report(out = none, err = none, status = EXIT_SAME);
+}
+
+func raise_status(edits r: Report, status: int): void {
+    if (status > r.status) {
+        r.status = status;
+    }
+}
+
+pub func fail(edits r: Report, message: string): void {
+    r.err.push(message);
+    raise_status(edits: r, EXIT_TROUBLE);
+}
+
+pub func ignore_of(opts: Options): Ignore {
+    return make_ignore(opts.ignore_case, opts.ignore_all_space, opts.ignore_space_change);
+}
+
+# `dir/name`, without doubling a slash the directory already ends with.
+pub func join_path(dir: string, name: string): string {
+    if (dir.endsWith("/")) {
+        return dir + name;
+    }
+    return dir + "/" + name;
+}
+
+# The last component of a path, ignoring trailing slashes.
+pub func base_name(path: string): string {
+    var p = path;
+    while (p.len() > 1 and p.endsWith("/")) {
+        p = p.slice(0, p.len() - 1);
+    }
+    let parts = p.split("/");
+    return parts[parts.len() - 1];
+}
+
+func read_input(path: string): bytes {
+    if (path == "-") {
+        return readBytes("/dev/stdin");
+    }
+    return readBytes(path);
+}
+
+pub func same_bytes(a: bytes, b: bytes): bool {
+    if (a.len() != b.len()) {
+        return false;
+    }
+    for (k in 0..a.len()) {
+        if (a[k] != b[k]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+# Whether `data` is well-formed UTF-8 (no overlong forms, surrogates or
+# values past U+10FFFF).
+pub func is_utf8(data: bytes): bool {
+    let n = data.len();
+    var k = 0;
+    while (k < n) {
+        let c = data[k];
+        if (c < 0x80) {
+            k += 1;
+            continue;
+        }
+        var need = 0;
+        if (c >= 0xC2 and c <= 0xDF) {
+            need = 1;
+        } else if (c >= 0xE0 and c <= 0xEF) {
+            need = 2;
+        } else if (c >= 0xF0 and c <= 0xF4) {
+            need = 3;
+        } else {
+            return false;
+        }
+        if (k + need >= n) {
+            return false;
+        }
+        for (j in 1..need + 1) {
+            if ((data[k + j] & 0xC0) != 0x80) {
+                return false;
+            }
+        }
+        let second = data[k + 1];
+        if ((c == 0xE0 and second < 0xA0) or (c == 0xED and second > 0x9F)
+            or (c == 0xF0 and second < 0x90) or (c == 0xF4 and second > 0x8F)) {
+            return false;
+        }
+        k += need + 1;
+    }
+    return true;
+}
+
+# GNU diff treats a file containing a NUL byte as binary. Loup strings are
+# UTF-8 text, so a file that is not valid UTF-8 is compared as binary too.
+pub func is_binary(data: bytes): bool {
+    for (k in 0..data.len()) {
+        if (data[k] == 0) {
+            return true;
+        }
+    }
+    return !is_utf8(data);
+}
+
+# The changes between two texts under the options' comparison rules.
+pub func changes_between(a: Text, b: Text, opts: Options): list[Change] {
+    let ignore = ignore_of(opts);
+    let classes = classify(keys_of(a, ignore), keys_of(b, ignore));
+    let horizon = if (opts.unified) { opts.context } else { 0 };
+    if (!opts.ignore_case and !opts.ignore_all_space and !opts.ignore_space_change) {
+        return diff_sequences(classes.a, classes.b, classes.a, classes.b, classes.count, horizon);
+    }
+    let exact = make_ignore(false, false, false);
+    let raw = classify(keys_of(a, exact), keys_of(b, exact));
+    return diff_sequences(classes.a, classes.b, raw.a, raw.b, classes.count, horizon);
+}
+
+# The output for two texts known to differ, after any `diff ...` header.
+pub func render_changes(a: Text, b: Text, changes: list[Change], opts: Options, path0: string, path1: string): list[string] {
+    if (opts.unified) {
+        let label0 = if (opts.labels.len() >= 1) { opts.labels[0] } else { path0 };
+        let label1 = if (opts.labels.len() >= 2) { opts.labels[1] } else { path1 };
+        return unified_output(a, b, changes, opts.context, label0, label1);
+    }
+    return normal_output(a, b, changes);
+}
+
+func identical(edits r: Report, opts: Options, path0: string, path1: string): void {
+    if (opts.report_identical) {
+        r.out.push(i"Files {$ path0 $} and {$ path1 $} are identical" + "\n");
+    }
+}
+
+# Compares two files that exist (or are "-"). Inside a directory comparison
+# (`in_dir`) a difference is introduced by a `diff OPTIONS A B` line.
+pub func compare_files(edits r: Report, opts: Options, path0: string, path1: string, in_dir: bool): void {
+    if (path0 == "-" and path1 == "-") {
+        identical(edits: r, opts, path0, path1);
+        return;
+    }
+    let data0 = read_input(path0);
+    let data1 = read_input(path1);
+    if (same_bytes(data0, data1)) {
+        identical(edits: r, opts, path0, path1);
+        return;
+    }
+    if (is_binary(data0) or is_binary(data1)) {
+        let kind = if (opts.brief) { "Files" } else { "Binary files" };
+        r.out.push(i"{$ kind $} {$ path0 $} and {$ path1 $} differ" + "\n");
+        raise_status(edits: r, EXIT_DIFFERENT);
+        return;
+    }
+
+    let a = split_text(data0.decode());
+    let b = split_text(data1.decode());
+    let changes = changes_between(a, b, opts);
+    if (changes.len() == 0) {
+        identical(edits: r, opts, path0, path1);
+        return;
+    }
+    raise_status(edits: r, EXIT_DIFFERENT);
+    if (opts.brief) {
+        r.out.push(i"Files {$ path0 $} and {$ path1 $} differ" + "\n");
+        return;
+    }
+    if (in_dir) {
+        var words = ["diff"];
+        for (s in opts.switches) {
+            words.push(s);
+        }
+        words.push(path0);
+        words.push(path1);
+        r.out.push(words.join(" ") + "\n");
+    }
+    for (piece in render_changes(a, b, changes, opts, path0, path1)) {
+        r.out.push(piece);
+    }
+}
+
+func sorted_entries(dir: string): list[string] {
+    var names = listDir(dir);
+    names.sort(func(x: string, y: string): int {
+        return if (x < y) { -1 } else if (x > y) { 1 } else { 0 };
+    });
+    return names;
+}
+
+# The message for an entry that is a directory on one side only.
+pub func kind_mismatch(path0: string, dir0: bool, path1: string): string {
+    if (dir0) {
+        return i"File {$ path0 $} is a directory while file {$ path1 $} is a regular file" + "\n";
+    }
+    return i"File {$ path0 $} is a regular file while file {$ path1 $} is a directory" + "\n";
+}
+
+# Compares two entries that both exist inside the directories being compared.
+func compare_entry(edits r: Report, opts: Options, path0: string, path1: string): void {
+    let dir0 = isDir(path0);
+    let dir1 = isDir(path1);
+    if (dir0 and dir1) {
+        if (opts.recursive) {
+            compare_dirs(edits: r, opts, path0, path1);
+        } else {
+            r.out.push(i"Common subdirectories: {$ path0 $} and {$ path1 $}" + "\n");
+        }
+    } else if (dir0 or dir1) {
+        r.out.push(kind_mismatch(path0, dir0, path1));
+        raise_status(edits: r, EXIT_DIFFERENT);
+    } else {
+        compare_files(edits: r, opts, path0, path1, true);
+    }
+}
+
+# Compares two directories: the union of their entries in name order.
+pub func compare_dirs(edits r: Report, opts: Options, dir0: string, dir1: string): void {
+    let names0 = sorted_entries(dir0);
+    let names1 = sorted_entries(dir1);
+    var i = 0;
+    var j = 0;
+    while (i < names0.len() or j < names1.len()) {
+        if (j >= names1.len() or (i < names0.len() and names0[i] < names1[j])) {
+            r.out.push(i"Only in {$ dir0 $}: {$ names0[i] $}" + "\n");
+            raise_status(edits: r, EXIT_DIFFERENT);
+            i += 1;
+        } else if (i >= names0.len() or names1[j] < names0[i]) {
+            r.out.push(i"Only in {$ dir1 $}: {$ names1[j] $}" + "\n");
+            raise_status(edits: r, EXIT_DIFFERENT);
+            j += 1;
+        } else {
+            compare_entry(edits: r, opts, join_path(dir0, names0[i]), join_path(dir1, names1[j]));
+            i += 1;
+            j += 1;
+        }
+    }
+}

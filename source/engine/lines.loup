@@ -1,0 +1,127 @@
+@mode(host.dual)
+
+# Turning file contents into comparable lines. Each line gets a key (the text
+# as the -i, -w and -b options see it), and equal keys share one small integer,
+# the line's equivalence class, which is all the diff algorithm compares.
+
+# The lines of a file, without their newlines, and whether the last line
+# lacked one ("\ No newline at end of file").
+pub struct Text {
+    pub lines: list[string];
+    pub missing_newline: bool;
+}
+
+# How lines are compared. Build one with make_ignore: Loup 1.26 native
+# builds need a struct to be constructed in the module that defines it.
+pub struct Ignore {
+    pub case: bool;          # -i: upper and lower case are equal
+    pub all_space: bool;     # -w: white space is ignored entirely
+    pub space_change: bool;  # -b: runs of white space are equal; trailing space is ignored
+}
+
+# Equivalence classes for the lines of two files: equal keys get equal
+# numbers, counted from 1.
+pub struct Classes {
+    pub a: list[int];
+    pub b: list[int];
+    pub count: int;
+}
+
+pub func make_ignore(fold_case: bool, all_space: bool, space_change: bool): Ignore {
+    return Ignore(case = fold_case, all_space = all_space, space_change = space_change);
+}
+
+pub func split_text(content: string): Text {
+    var lines = content.split("\n");
+    var missing = false;
+    if (content.len() == 0) {
+        lines = [];
+    } else if (content.endsWith("\n")) {
+        lines.pop();
+    } else {
+        missing = true;
+    }
+    return Text(lines = lines, missing_newline = missing);
+}
+
+# White space as C's isspace() sees it, apart from the newline.
+pub func is_space(ch: string): bool {
+    return ch == " " or ch == "\t" or ch == "\r" or ch == str(char.of(11)) or ch == str(char.of(12));
+}
+
+# The comparison key of one line. `complete` is false only for a last line
+# that has no newline: without -w or -b that line differs from the same text
+# followed by a newline.
+pub func line_key(line: string, complete: bool, ignore: Ignore): string {
+    var key = line;
+    if (ignore.case) {
+        key = key.toLowerCase();
+    }
+    if (ignore.all_space) {
+        var out = "";
+        for (ch in key) {
+            if (!is_space(ch)) {
+                out += ch;
+            }
+        }
+        return out;
+    }
+    if (ignore.space_change) {
+        var out = "";
+        var pending = false;
+        for (ch in key) {
+            if (is_space(ch)) {
+                pending = true;
+            } else {
+                if (pending) {
+                    out += " ";
+                    pending = false;
+                }
+                out += ch;
+            }
+        }
+        return out;
+    }
+    if (complete) {
+        key += "\n";
+    }
+    return key;
+}
+
+pub func keys_of(text: Text, ignore: Ignore): list[string] {
+    var keys: list[string] = [];
+    let n = text.lines.len();
+    for (i in 0..n) {
+        let complete = i < n - 1 or !text.missing_newline;
+        keys.push(line_key(text.lines[i], complete, ignore));
+    }
+    return keys;
+}
+
+pub func classify(keys_a: list[string], keys_b: list[string]): Classes {
+    var ids: dict[string, int] = {};
+    var next = 1;
+    var a: list[int] = [];
+    var b: list[int] = [];
+    for (key in keys_a) {
+        let known = ids.get(key) ?? 0;
+        if (known == 0) {
+            ids[key] = next;
+            a.push(next);
+            next += 1;
+        } else {
+            a.push(known);
+        }
+    }
+    for (key in keys_b) {
+        let known = ids.get(key) ?? 0;
+        if (known == 0) {
+            ids[key] = next;
+            b.push(next);
+            next += 1;
+        } else {
+            b.push(known);
+        }
+    }
+    return Classes(a = a, b = b, count = next);
+}

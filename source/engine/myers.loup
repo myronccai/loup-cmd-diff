@@ -1,0 +1,577 @@
+@mode(host.dual)
+
+# The Myers O(ND) difference algorithm, following GNU diff (analyze.c and
+# gnulib's diffseq.h) step by step so that the hunks match GNU's:
+#
+#   1. strip the lines the two files share at the start and the end;
+#   2. set aside lines that cannot match anything ("confusing" lines);
+#   3. find a shortest edit script with the linear-space, divide-and-conquer
+#      form of Myers' algorithm (search from both ends for a middle snake);
+#   4. slide each run of changes to a canonical place (shift_boundaries);
+#   5. collect the runs into a list of changes.
+#
+# Sequences are lists of equivalence classes (see engine.lines): two lines
+# are equal when their numbers are equal.
+
+# One difference: `deleted` lines of the first sequence starting at index
+# `line0` were replaced by `inserted` lines of the second starting at `line1`.
+pub struct Change {
+    pub line0: int;
+    pub line1: int;
+    pub deleted: int;
+    pub inserted: int;
+}
+
+const OFFSET_MAX: int = 4611686018427387904;
+
+# A point where a shortest edit script crosses from the first half of the
+# problem into the second, and whether each half still needs a minimal search.
+struct Partition {
+    pub xmid: int;
+    pub ymid: int;
+    pub lo_minimal: bool;
+    pub hi_minimal: bool;
+}
+
+# The state of one comparison: the undiscarded lines of both files, where
+# they came from, the "changed" flags being filled in, and the furthest-
+# reaching paths per diagonal of the forward and backward searches.
+class Analysis {
+    pub var xv: list[int] = [];
+    pub var yv: list[int] = [];
+    pub var xreal: list[int] = [];
+    pub var yreal: list[int] = [];
+    # One flag per line, plus a false sentinel before and two after:
+    # line k is at index k + 1.
+    pub var changed0: list[bool] = [];
+    pub var changed1: list[bool] = [];
+    var fd: list[int] = [];
+    var bd: list[int] = [];
+    var doff: int = 0;
+    var too_expensive: int = 4096;
+
+    pub modifier func prepare(n0: int, n1: int): void {
+        this.changed0 = flags(n0);
+        this.changed1 = flags(n1);
+    }
+
+    # Sets up the diagonal vectors once xv and yv hold the undiscarded lines.
+    pub modifier func start_search(): void {
+        let nx = this.xv.len();
+        let ny = this.yv.len();
+        let diags = nx + ny + 3;
+        var fd: list[int] = [];
+        var bd: list[int] = [];
+        for (k in 0..diags) {
+            fd.push(0);
+            bd.push(0);
+        }
+        this.fd = fd;
+        this.bd = bd;
+        this.doff = ny + 1;
+        var expensive = 1;
+        var d = diags;
+        while (d != 0) {
+            expensive = expensive * 2;
+            d = d / 4;
+        }
+        this.too_expensive = if (expensive > 4096) { expensive } else { 4096 };
+    }
+
+    # Finds the midpoint of a shortest edit script for xv[xoff:xlim] and
+    # yv[yoff:ylim] by extending forward and backward searches one edit at a
+    # time until they overlap (gnulib's `diag`).
+    modifier func diag(xoff: int, xlim: int, yoff: int, ylim: int, find_minimal: bool): Partition {
+        let o = this.doff;
+        let dmin = xoff - ylim;
+        let dmax = xlim - yoff;
+        let fmid = xoff - yoff;
+        let bmid = xlim - ylim;
+        var fmin = fmid;
+        var fmax = fmid;
+        var bmin = bmid;
+        var bmax = bmid;
+        let odd = ((fmid - bmid) & 1) != 0;
+
+        this.fd[fmid + o] = xoff;
+        this.bd[bmid + o] = xlim;
+
+        var c = 1;
+        while (true) {
+            # Extend the top-down search by an edit step in each diagonal.
+            if (fmin > dmin) {
+                fmin -= 1;
+                this.fd[fmin - 1 + o] = -1;
+            } else {
+                fmin += 1;
+            }
+            if (fmax < dmax) {
+                fmax += 1;
+                this.fd[fmax + 1 + o] = -1;
+            } else {
+                fmax -= 1;
+            }
+            var d = fmax;
+            while (d >= fmin) {
+                let tlo = this.fd[d - 1 + o];
+                let thi = this.fd[d + 1 + o];
+                let x0 = if (tlo < thi) { thi } else { tlo + 1 };
+                var x = x0;
+                var y = x0 - d;
+                while (x < xlim and y < ylim and this.xv[x] == this.yv[y]) {
+                    x += 1;
+                    y += 1;
+                }
+                this.fd[d + o] = x;
+                if (odd and bmin <= d and d <= bmax and this.bd[d + o] <= x) {
+                    return Partition(xmid = x, ymid = y, lo_minimal = true, hi_minimal = true);
+                }
+                d -= 2;
+            }
+
+            # Similarly extend the bottom-up search.
+            if (bmin > dmin) {
+                bmin -= 1;
+                this.bd[bmin - 1 + o] = OFFSET_MAX;
+            } else {
+                bmin += 1;
+            }
+            if (bmax < dmax) {
+                bmax += 1;
+                this.bd[bmax + 1 + o] = OFFSET_MAX;
+            } else {
+                bmax -= 1;
+            }
+            d = bmax;
+            while (d >= bmin) {
+                let tlo = this.bd[d - 1 + o];
+                let thi = this.bd[d + 1 + o];
+                let x0 = if (tlo < thi) { tlo } else { thi - 1 };
+                var x = x0;
+                var y = x0 - d;
+                while (xoff < x and yoff < y and this.xv[x - 1] == this.yv[y - 1]) {
+                    x -= 1;
+                    y -= 1;
+                }
+                this.bd[d + o] = x;
+                if (!odd and fmin <= d and d <= fmax and x <= this.fd[d + o]) {
+                    return Partition(xmid = x, ymid = y, lo_minimal = true, hi_minimal = true);
+                }
+                d -= 2;
+            }
+
+            if (!find_minimal and c >= this.too_expensive) {
+                return this.best_guess(xoff, xlim, yoff, ylim, fmin, fmax, bmin, bmax);
+            }
+            c += 1;
+        }
+        return Partition(xmid = xoff, ymid = yoff, lo_minimal = true, hi_minimal = true);
+    }
+
+    # GNU's heuristic for very different inputs: after too many edit steps,
+    # give up on a minimal script and split at the furthest point reached.
+    func best_guess(xoff: int, xlim: int, yoff: int, ylim: int, fmin: int, fmax: int, bmin: int, bmax: int): Partition {
+        let o = this.doff;
+        var fxybest = -1;
+        var fxbest = 0;
+        var d = fmax;
+        while (d >= fmin) {
+            var x = if (this.fd[d + o] < xlim) { this.fd[d + o] } else { xlim };
+            var y = x - d;
+            if (ylim < y) {
+                x = ylim + d;
+                y = ylim;
+            }
+            if (fxybest < x + y) {
+                fxybest = x + y;
+                fxbest = x;
+            }
+            d -= 2;
+        }
+        var bxybest = OFFSET_MAX;
+        var bxbest = 0;
+        d = bmax;
+        while (d >= bmin) {
+            var x = if (xoff > this.bd[d + o]) { xoff } else { this.bd[d + o] };
+            var y = x - d;
+            if (y < yoff) {
+                x = yoff + d;
+                y = yoff;
+            }
+            if (x + y < bxybest) {
+                bxybest = x + y;
+                bxbest = x;
+            }
+            d -= 2;
+        }
+        if ((xlim + ylim) - bxybest < fxybest - (xoff + yoff)) {
+            return Partition(xmid = fxbest, ymid = fxybest - fxbest, lo_minimal = true, hi_minimal = false);
+        }
+        return Partition(xmid = bxbest, ymid = bxybest - bxbest, lo_minimal = false, hi_minimal = true);
+    }
+
+    # Marks the lines of xv[xoff:xlim] and yv[yoff:ylim] that are not in a
+    # shortest common subsequence (gnulib's `compareseq`).
+    pub modifier func compareseq(xoff_in: int, xlim_in: int, yoff_in: int, ylim_in: int, find_minimal: bool): void {
+        var xoff = xoff_in;
+        var xlim = xlim_in;
+        var yoff = yoff_in;
+        var ylim = ylim_in;
+
+        # Slide down the bottom initial diagonal, then up the top one.
+        while (xoff < xlim and yoff < ylim and this.xv[xoff] == this.yv[yoff]) {
+            xoff += 1;
+            yoff += 1;
+        }
+        while (xoff < xlim and yoff < ylim and this.xv[xlim - 1] == this.yv[ylim - 1]) {
+            xlim -= 1;
+            ylim -= 1;
+        }
+
+        if (xoff == xlim) {
+            while (yoff < ylim) {
+                this.changed1[this.yreal[yoff] + 1] = true;
+                yoff += 1;
+            }
+        } else if (yoff == ylim) {
+            while (xoff < xlim) {
+                this.changed0[this.xreal[xoff] + 1] = true;
+                xoff += 1;
+            }
+        } else {
+            let part = this.diag(xoff, xlim, yoff, ylim, find_minimal);
+            this.compareseq(xoff, part.xmid, yoff, part.ymid, part.lo_minimal);
+            this.compareseq(part.xmid, xlim, part.ymid, ylim, part.hi_minimal);
+        }
+    }
+}
+
+# `n` false flags with room for the sentinels (see Analysis.changed0).
+func flags(n: int): list[bool] {
+    var out: list[bool] = [];
+    for (k in 0..n + 3) {
+        out.push(false);
+    }
+    return out;
+}
+
+# GNU's discard_confusing_lines, first half: 1 marks a line with no match in
+# the other file, 2 a line with very many matches (provisionally discardable).
+func discard_marks(eq: list[int], other_counts: list[int]): list[int] {
+    let end = eq.len();
+    var many = 5;
+    var tem = end / 64;
+    tem = tem / 4;
+    while (tem > 0) {
+        many *= 2;
+        tem = tem / 4;
+    }
+    var marks: list[int] = [];
+    for (i in 0..end) {
+        let nmatch = other_counts[eq[i]];
+        if (nmatch == 0) {
+            marks.push(1);
+        } else if (nmatch > many) {
+            marks.push(2);
+        } else {
+            marks.push(0);
+        }
+    }
+    return marks;
+}
+
+# GNU's discard_confusing_lines, second half: provisional discards stand
+# only inside a run of discards that starts and ends with definite ones.
+func settle_marks(edits marks: list[int]): void {
+    let end = marks.len();
+    var i = 0;
+    while (i < end) {
+        if (marks[i] == 2) {
+            marks[i] = 0;
+        } else if (marks[i] != 0) {
+            # Find the end of this run of discardable lines and count how
+            # many are provisional.
+            var provisional = 0;
+            var j = i;
+            while (j < end and marks[j] != 0) {
+                if (marks[j] == 2) {
+                    provisional += 1;
+                }
+                j += 1;
+            }
+            # Cancel provisional discards at the end and shrink the run.
+            while (j > i and marks[j - 1] == 2) {
+                j -= 1;
+                marks[j] = 0;
+                provisional -= 1;
+            }
+            let length = j - i;
+
+            if (provisional * 4 > length) {
+                # A quarter of the run is provisional: keep all of those.
+                while (j > i) {
+                    j -= 1;
+                    if (marks[j] == 2) {
+                        marks[j] = 0;
+                    }
+                }
+            } else {
+                # MINIMUM is about the square root of LENGTH/4; cancel any
+                # subrun of MINIMUM or more provisionals.
+                var minimum = 1;
+                var t = length / 4;
+                t = t / 4;
+                while (t > 0) {
+                    minimum *= 2;
+                    t = t / 4;
+                }
+                minimum += 1;
+                var consec = 0;
+                j = 0;
+                while (j < length) {
+                    if (marks[i + j] != 2) {
+                        consec = 0;
+                    } else {
+                        consec += 1;
+                        if (minimum == consec) {
+                            j -= consec;
+                        } else if (minimum < consec) {
+                            marks[i + j] = 0;
+                        }
+                    }
+                    j += 1;
+                }
+
+                # From the start of the run, cancel provisionals until three
+                # definite discards in a row, or the first one 8 lines in.
+                consec = 0;
+                j = 0;
+                while (j < length) {
+                    if (j >= 8 and marks[i + j] == 1) {
+                        break;
+                    }
+                    if (marks[i + j] == 2) {
+                        consec = 0;
+                        marks[i + j] = 0;
+                    } else if (marks[i + j] == 0) {
+                        consec = 0;
+                    } else {
+                        consec += 1;
+                    }
+                    if (consec == 3) {
+                        break;
+                    }
+                    j += 1;
+                }
+
+                # The same from the end of the run.
+                i += length - 1;
+                consec = 0;
+                j = 0;
+                while (j < length) {
+                    if (j >= 8 and marks[i - j] == 1) {
+                        break;
+                    }
+                    if (marks[i - j] == 2) {
+                        consec = 0;
+                        marks[i - j] = 0;
+                    } else if (marks[i - j] == 0) {
+                        consec = 0;
+                    } else {
+                        consec += 1;
+                    }
+                    if (consec == 3) {
+                        break;
+                    }
+                    j += 1;
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+func counts_of(eq: list[int], classes: int): list[int] {
+    var counts: list[int] = [];
+    for (k in 0..classes + 1) {
+        counts.push(0);
+    }
+    for (e in eq) {
+        counts[e] = counts[e] + 1;
+    }
+    return counts;
+}
+
+# Slides each run of changed lines so that equivalent diffs come out the same
+# way GNU's do: as far down as possible, unless the run can line up with a
+# run of changes in the other file (GNU's shift_boundaries).
+pub func shift_boundaries(edits changed: list[bool], other: list[bool], equivs: list[int]): void {
+    let i_end = equivs.len();
+    var i = 0;
+    var j = 0;
+    while (true) {
+        # Scan forward to the next run of changes, keeping J at the
+        # corresponding point in the other file.
+        while (i < i_end and !changed[i + 1]) {
+            while (other[j + 1]) {
+                j += 1;
+            }
+            j += 1;
+            i += 1;
+        }
+        if (i == i_end) {
+            break;
+        }
+        var start = i;
+        i += 1;
+        while (changed[i + 1]) {
+            i += 1;
+        }
+        while (other[j + 1]) {
+            j += 1;
+        }
+
+        var corresponding = i_end;
+        var runlength = 0;
+        while (true) {
+            runlength = i - start;
+
+            # Move the run back while the line before it equals its last
+            # line, merging with earlier runs.
+            while (start > 0 and equivs[start - 1] == equivs[i - 1]) {
+                start -= 1;
+                changed[start + 1] = true;
+                i -= 1;
+                changed[i + 1] = false;
+                while (changed[start]) {
+                    start -= 1;
+                }
+                j -= 1;
+                while (other[j + 1]) {
+                    j -= 1;
+                }
+            }
+
+            corresponding = if (other[j]) { i } else { i_end };
+
+            # Then move it forward as far as possible, merging with later
+            # runs and noting where it lines up with the other file.
+            while (i != i_end and equivs[start] == equivs[i]) {
+                changed[start + 1] = false;
+                start += 1;
+                changed[i + 1] = true;
+                i += 1;
+                while (changed[i + 1]) {
+                    i += 1;
+                }
+                j += 1;
+                while (other[j + 1]) {
+                    corresponding = i;
+                    j += 1;
+                }
+            }
+            if (runlength == i - start) {
+                break;
+            }
+        }
+
+        # Move the merged run back to line up with the other file if it can.
+        while (corresponding < i) {
+            start -= 1;
+            changed[start + 1] = true;
+            i -= 1;
+            changed[i + 1] = false;
+            j -= 1;
+            while (other[j + 1]) {
+                j -= 1;
+            }
+        }
+    }
+}
+
+# Collects the runs of changed lines into a list of changes, offset by
+# `base` lines that were left out of the analysis at the start.
+func build_script(changed0: list[bool], changed1: list[bool], n0: int, n1: int, base: int): list[Change] {
+    var script: list[Change] = [];
+    var i0 = 0;
+    var i1 = 0;
+    while (i0 < n0 or i1 < n1) {
+        if (changed0[i0 + 1] or changed1[i1 + 1]) {
+            let s0 = i0;
+            let s1 = i1;
+            while (changed0[i0 + 1]) {
+                i0 += 1;
+            }
+            while (changed1[i1 + 1]) {
+                i1 += 1;
+            }
+            script.push(Change(line0 = s0 + base, line1 = s1 + base, deleted = i0 - s0, inserted = i1 - s1));
+        } else {
+            i0 += 1;
+            i1 += 1;
+        }
+    }
+    return script;
+}
+
+# The differences between two sequences of equivalence classes (numbered
+# 1 to classes - 1). GNU first sets aside the lines the files share byte for
+# byte at the start and the end, so `exact_a` and `exact_b` classify the
+# lines exactly (they equal `a` and `b` unless -i, -w or -b is in effect).
+# `horizon` lines of that shared start and end stay in the analysis, as GNU
+# keeps its context lines there.
+pub func diff_sequences(a: list[int], b: list[int], exact_a: list[int], exact_b: list[int], classes: int, horizon: int): list[Change] {
+    let n0 = a.len();
+    let n1 = b.len();
+    let shorter = if (n0 < n1) { n0 } else { n1 };
+    var prefix = 0;
+    while (prefix < shorter and exact_a[prefix] == exact_b[prefix]) {
+        prefix += 1;
+    }
+    var suffix = 0;
+    while (suffix < shorter - prefix and exact_a[n0 - 1 - suffix] == exact_b[n1 - 1 - suffix]) {
+        suffix += 1;
+    }
+    let base = if (prefix > horizon) { prefix - horizon } else { 0 };
+    let tail = if (suffix > horizon) { suffix - horizon } else { 0 };
+    let eq0 = a.slice(base, n0 - tail);
+    let eq1 = b.slice(base, n1 - tail);
+    let m0 = eq0.len();
+    let m1 = eq1.len();
+
+    # Lines that match nothing in the other file are changes for certain;
+    # leave them, and runs of lines with very many matches, out of the search.
+    var marks0 = discard_marks(eq0, counts_of(eq1, classes));
+    var marks1 = discard_marks(eq1, counts_of(eq0, classes));
+    settle_marks(edits: marks0);
+    settle_marks(edits: marks1);
+
+    let an = Analysis();
+    safe {
+        an.prepare(m0, m1);
+        for (k in 0..m0) {
+            if (marks0[k] == 0) {
+                an.xv.push(eq0[k]);
+                an.xreal.push(k);
+            } else {
+                an.changed0[k + 1] = true;
+            }
+        }
+        for (k in 0..m1) {
+            if (marks1[k] == 0) {
+                an.yv.push(eq1[k]);
+                an.yreal.push(k);
+            } else {
+                an.changed1[k + 1] = true;
+            }
+        }
+        an.start_search();
+        an.compareseq(0, an.xv.len(), 0, an.yv.len(), false);
+    }
+
+    var changed0 = an.changed0;
+    var changed1 = an.changed1;
+    shift_boundaries(edits: changed0, changed1, eq0);
+    shift_boundaries(edits: changed1, changed0, eq1);
+    return build_script(changed0, changed1, m0, m1, base);
+}

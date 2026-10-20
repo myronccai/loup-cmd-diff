@@ -1,0 +1,69 @@
+@mode(host.dual)
+
+from debug.assert import (expect, expectEq);
+from engine.lines import (split_text, keys_of, classify, make_ignore);
+from engine.myers import (diff_sequences);
+from engine.format import (normal_range, unified_range, normal_output, unified_output, hunk_end);
+
+func normal(a: string, b: string): string {
+    let ta = split_text(a);
+    let tb = split_text(b);
+    let exact = make_ignore(false, false, false);
+    let c = classify(keys_of(ta, exact), keys_of(tb, exact));
+    return normal_output(ta, tb, diff_sequences(c.a, c.b, c.a, c.b, c.count, 0)).join("");
+}
+
+func unified(a: string, b: string, context: int): string {
+    let ta = split_text(a);
+    let tb = split_text(b);
+    let exact = make_ignore(false, false, false);
+    let c = classify(keys_of(ta, exact), keys_of(tb, exact));
+    let changes = diff_sequences(c.a, c.b, c.a, c.b, c.count, context);
+    return unified_output(ta, tb, changes, context, "a", "b").join("");
+}
+
+func test_normal_ranges(): void {
+    expectEq(normal_range(4, 0), "4", "empty range names the line before");
+    expectEq(normal_range(4, 1), "5", "one line");
+    expectEq(normal_range(4, 3), "5,7", "several lines");
+}
+
+func test_unified_ranges(): void {
+    expectEq(unified_range(0, -1), "0,0", "empty file");
+    expectEq(unified_range(5, 4), "5,0", "empty range after line 5");
+    expectEq(unified_range(2, 2), "3", "one line");
+    expectEq(unified_range(2, 5), "3,4", "start and count");
+}
+
+func test_normal_commands(): void {
+    expectEq(normal("a\nb\n", "a\nc\n"), "2c2\n< b\n---\n> c\n", "change");
+    expectEq(normal("a\nb\n", "a\n"), "2d1\n< b\n", "delete");
+    expectEq(normal("a\n", "a\nb\nc\n"), "1a2,3\n> b\n> c\n", "add");
+}
+
+func test_missing_newline_marker(): void {
+    expectEq(normal("a\nb", "a\nb\n"), "2c2\n< b\n\\ No newline at end of file\n---\n> b\n", "marker after the line");
+}
+
+func test_unified_single_hunk(): void {
+    let want = "--- a\n+++ b\n@@ -1,3 +1,3 @@\n x\n-y\n+Y\n z\n";
+    expectEq(unified("x\ny\nz\n", "x\nY\nz\n", 3), want, "context clipped at both ends");
+}
+
+func test_unified_hunks_merge_or_split(): void {
+    var a = "";
+    var b = "";
+    for (k in 1..11) {
+        a += i"{$ k $}" + "\n";
+        b += if (k == 2 or k == 9) { "X\n" } else { i"{$ k $}" + "\n" };
+    }
+    # Changes at lines 2 and 9 are 6 unchanged lines apart.
+    expect(unified(a, b, 3).index_of("@@ -1,10 +1,10 @@") >= 0, "context 3 joins them");
+    let split = unified(a, b, 2);
+    expect(split.index_of("@@ -1,4 +1,4 @@") >= 0 and split.index_of("@@ -7,4 +7,4 @@") >= 0, "context 2 splits them");
+}
+
+func test_unified_empty_files(): void {
+    expectEq(unified("", "a\n", 3), "--- a\n+++ b\n@@ -0,0 +1 @@\n+a\n", "from empty");
+    expectEq(unified("a\n", "", 3), "--- a\n+++ b\n@@ -1 +0,0 @@\n-a\n", "to empty");
+}

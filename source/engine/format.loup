@@ -1,0 +1,129 @@
+@mode(host.dual)
+
+# Rendering a list of changes as GNU diff's normal and unified formats. Both
+# return the output as a list of pieces to join, never printing.
+
+from engine.lines import (Text);
+from engine.myers import (Change);
+
+pub const NO_NEWLINE: string = "\\ No newline at end of file\n";
+
+# One output line: a prefix, the text of line `k` of `text` and its newline,
+# plus GNU's marker when that line is the last one and had no newline.
+pub func emit_line(edits out: list[string], prefix: string, text: Text, k: int): void {
+    out.push(prefix + text.lines[k] + "\n");
+    if (k == text.lines.len() - 1 and text.missing_newline) {
+        out.push(NO_NEWLINE);
+    }
+}
+
+# A normal-format line range: `count` lines from index `first`. An empty
+# range names the line before it.
+pub func normal_range(first: int, count: int): string {
+    if (count == 0) {
+        return str(first);
+    }
+    if (count == 1) {
+        return str(first + 1);
+    }
+    return i"{$ first + 1 $},{$ first + count $}";
+}
+
+# The command line of a normal-format hunk: `2,3c2`, `5a6,7`, `4d3`.
+pub func normal_command(c: Change): string {
+    let letter = if (c.deleted == 0) { "a" } else if (c.inserted == 0) { "d" } else { "c" };
+    return normal_range(c.line0, c.deleted) + letter + normal_range(c.line1, c.inserted);
+}
+
+pub func normal_output(a: Text, b: Text, changes: list[Change]): list[string] {
+    var out: list[string] = [];
+    for (c in changes) {
+        out.push(normal_command(c) + "\n");
+        for (k in c.line0..c.line0 + c.deleted) {
+            emit_line(edits: out, "< ", a, k);
+        }
+        if (c.deleted > 0 and c.inserted > 0) {
+            out.push("---\n");
+        }
+        for (k in c.line1..c.line1 + c.inserted) {
+            emit_line(edits: out, "> ", b, k);
+        }
+    }
+    return out;
+}
+
+# A unified-format range for lines `first` to `last` (inclusive, 0-based):
+# `start,count`, `start` alone when the count is 1, and `line-before,0` when
+# it is empty.
+pub func unified_range(first: int, last: int): string {
+    let trans_a = first + 1;
+    let trans_b = last + 1;
+    if (trans_b < trans_a) {
+        return i"{$ trans_b $},0";
+    }
+    if (trans_b == trans_a) {
+        return str(trans_b);
+    }
+    return i"{$ trans_a $},{$ trans_b - trans_a + 1 $}";
+}
+
+# The index of the last change in the hunk that starts at `first`: later
+# changes join it while fewer than 2 * context + 1 unchanged lines separate
+# them.
+pub func hunk_end(changes: list[Change], first: int, context: int): int {
+    var k = first;
+    while (k + 1 < changes.len()) {
+        let top0 = changes[k].line0 + changes[k].deleted;
+        if (changes[k + 1].line0 - top0 >= 2 * context + 1) {
+            break;
+        }
+        k += 1;
+    }
+    return k;
+}
+
+pub func unified_output(a: Text, b: Text, changes: list[Change], context: int, label_a: string, label_b: string): list[string] {
+    var out: list[string] = [];
+    out.push(i"--- {$ label_a $}" + "\n");
+    out.push(i"+++ {$ label_b $}" + "\n");
+    let n0 = a.lines.len();
+    let n1 = b.lines.len();
+    var h = 0;
+    while (h < changes.len()) {
+        let e = hunk_end(changes, h, context);
+        let head = changes[h];
+        let tail = changes[e];
+        let first0 = if (head.line0 - context > 0) { head.line0 - context } else { 0 };
+        let first1 = if (head.line1 - context > 0) { head.line1 - context } else { 0 };
+        var last0 = tail.line0 + tail.deleted - 1;
+        var last1 = tail.line1 + tail.inserted - 1;
+        last0 = if (last0 < n0 - context) { last0 + context } else { n0 - 1 };
+        last1 = if (last1 < n1 - context) { last1 + context } else { n1 - 1 };
+        out.push(i"@@ -{$ unified_range(first0, last0) $} +{$ unified_range(first1, last1) $} @@" + "\n");
+
+        var i = first0;
+        var j = first1;
+        var next = h;
+        while (i <= last0 or j <= last1) {
+            if (next > e or i < changes[next].line0) {
+                # Unchanged lines are shown from the first file.
+                emit_line(edits: out, " ", a, i);
+                i += 1;
+                j += 1;
+            } else {
+                let c = changes[next];
+                for (k in 0..c.deleted) {
+                    emit_line(edits: out, "-", a, i);
+                    i += 1;
+                }
+                for (k in 0..c.inserted) {
+                    emit_line(edits: out, "+", b, j);
+                    j += 1;
+                }
+                next += 1;
+            }
+        }
+        h = e + 1;
+    }
+    return out;
+}

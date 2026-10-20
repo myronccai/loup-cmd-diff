@@ -1,0 +1,13 @@
+# Packing list
+tent
+sleeping bag
+stove
+fuel
+lighter
+water filter
+first aid kit
+map
+compass
+headlamp
+spare batteries
+rain jacket

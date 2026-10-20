@@ -1,32 +1,163 @@
 @mode(host.dual)
 
-# Command-line parsing. Loup 1.26 has no CLI library, so arguments are
-# parsed by hand into an Options value.
-#
-# Grammar: [OPTIONS] COMMAND [OPERANDS...]
-#   Options may appear anywhere before `--`; everything after `--` is an
-#   operand. Value options accept `--name VALUE` and `--name=VALUE`.
+# Command-line parsing for diff, following GNU getopt_long: options and
+# operands may be mixed, short options combine (`-ru`, `-U3`), long options
+# may be abbreviated to any unique prefix (`--rec`), `--` ends the options,
+# and `-` is an operand meaning standard input.
 
-pub const DEFAULT_GREETING: string = "Hello";
+from appinfo import (APP_NAME);
+
+pub const DEFAULT_CONTEXT: int = 3;
 
 pub struct Options {
-    pub command: string;
-    pub operands: list[string];
-    pub help: bool;
-    pub version: bool;
-    pub verbose: bool;
-    pub shout: bool;
-    pub greeting: string;
+    pub var help: bool;
+    pub var version: bool;
+    pub var brief: bool;               # -q: only say whether the files differ
+    pub var report_identical: bool;    # -s: say when the files are the same
+    pub var ignore_case: bool;         # -i
+    pub var ignore_all_space: bool;    # -w
+    pub var ignore_space_change: bool; # -b
+    pub var recursive: bool;           # -r
+    pub var unified: bool;             # -u / -U N; otherwise normal output
+    pub var context: int;              # context lines for unified output
+    pub var labels: list[string];      # --label LABEL, at most two
+    pub var switches: list[string];    # the option words, echoed in `diff ... A B` headers
+    pub var operands: list[string];    # FILE1 FILE2
+}
+
+# Every long option, in the order GNU lists ambiguous matches.
+const LONG_OPTIONS: string = "brief help ignore-all-space ignore-case ignore-space-change label normal recursive report-identical-files unified version";
+
+# The value of a decimal number made only of digits, or -1.
+pub func parse_count(text: string): int {
+    if (text.len() == 0 or text.len() > 9) {
+        return -1;
+    }
+    var value = 0;
+    for (ch in text) {
+        let digit = "0123456789".index_of(ch);
+        if (digit < 0) {
+            return -1;
+        }
+        value = value * 10 + digit;
+    }
+    return value;
+}
+
+# The long option that `name` names, either exactly or as a unique prefix.
+# Err holds the GNU message for an unknown or ambiguous name.
+pub func resolve_long(name: string, word: string): Result[string, string] {
+    let names = LONG_OPTIONS.split(" ");
+    var matches: list[string] = [];
+    for (candidate in names) {
+        if (candidate == name) {
+            return Ok(candidate);
+        }
+        if (candidate.startsWith(name)) {
+            matches.push(candidate);
+        }
+    }
+    if (matches.len() == 1) {
+        return Ok(matches[0]);
+    }
+    if (matches.len() == 0) {
+        return Err(i"unrecognized option '{$ word $}'");
+    }
+    var listed = "";
+    for (m in matches) {
+        listed += i" '--{$ m $}'";
+    }
+    return Err(i"option '{$ word $}' is ambiguous; possibilities:{$ listed $}");
+}
+
+# Parser state, threaded through the helpers below.
+struct State {
+    pub var opts: Options;
+    pub var style: string; # "", "normal" or "unified"
+}
+
+func set_style(edits st: State, style: string): Result[bool, string] {
+    if (st.style != "" and st.style != style) {
+        return Err("conflicting output style options");
+    }
+    st.style = style;
+    st.opts.unified = style == "unified";
+    return Ok(true);
+}
+
+func set_context(edits st: State, text: string): Result[bool, string] {
+    let n = parse_count(text);
+    if (n < 0) {
+        return Err(i"invalid context length '{$ text $}'");
+    }
+    set_style(edits: st, "unified")?;
+    # GNU keeps the largest context requested.
+    if (n > st.opts.context) {
+        st.opts.context = n;
+    }
+    return Ok(true);
+}
+
+func add_label(edits st: State, label: string): Result[bool, string] {
+    if (st.opts.labels.len() >= 2) {
+        return Err("too many file label options");
+    }
+    st.opts.labels.push(label);
+    return Ok(true);
+}
+
+# Applies a flag that takes no value. Returns false if `letter` is unknown.
+func apply_flag(edits st: State, letter: string): bool {
+    if (letter == "q") {
+        st.opts.brief = true;
+    } else if (letter == "s") {
+        st.opts.report_identical = true;
+    } else if (letter == "i") {
+        st.opts.ignore_case = true;
+    } else if (letter == "w") {
+        st.opts.ignore_all_space = true;
+    } else if (letter == "b") {
+        st.opts.ignore_space_change = true;
+    } else if (letter == "r") {
+        st.opts.recursive = true;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+func long_flag_letter(name: string): string {
+    return match name {
+        "brief" => "q",
+        "report-identical-files" => "s",
+        "ignore-case" => "i",
+        "ignore-all-space" => "w",
+        "ignore-space-change" => "b",
+        "recursive" => "r",
+        _ => "",
+    };
 }
 
 pub func parse_args(argv: list[string]): Result[Options, string] {
-    var command = "";
-    var operands: list[string] = [];
-    var help = false;
-    var version = false;
-    var verbose = false;
-    var shout = false;
-    var greeting = DEFAULT_GREETING;
+    let none: list[string] = [];
+    var st = State(
+        opts = Options(
+            help = false,
+            version = false,
+            brief = false,
+            report_identical = false,
+            ignore_case = false,
+            ignore_all_space = false,
+            ignore_space_change = false,
+            recursive = false,
+            unified = false,
+            context = 0,
+            labels = none,
+            switches = none,
+            operands = none,
+        ),
+        style = "",
+    );
     var only_operands = false;
 
     var i = 0;
@@ -35,64 +166,92 @@ pub func parse_args(argv: list[string]): Result[Options, string] {
         i += 1;
 
         if (only_operands or arg == "-" or !arg.startsWith("-")) {
-            if (command.is_empty()) {
-                command = arg;
-            } else {
-                operands.push(arg);
-            }
+            st.opts.operands.push(arg);
             continue;
         }
+        st.opts.switches.push(arg);
         if (arg == "--") {
             only_operands = true;
             continue;
         }
 
-        # Split `--name=value` into its name and inline value.
-        var name = arg;
-        var inline_value: Option[string] = None;
-        if (arg.startsWith("--") and arg.contains("=")) {
-            let parts = arg.split("=");
-            name = parts[0];
-            inline_value = Some(parts.slice(1).join("="));
-        }
+        if (arg.startsWith("--")) {
+            let body = arg.slice(2);
+            let eq = body.index_of("=");
+            let given = if (eq >= 0) { body.slice(0, eq) } else { body };
+            let word = if (eq >= 0) { arg.slice(0, eq + 2) } else { arg };
+            let name = resolve_long(given, word)?;
+            let has_value = eq >= 0;
+            let value = if (has_value) { body.slice(eq + 1) } else { "" };
 
-        if (name == "-g" or name == "--greeting") {
-            match inline_value {
-                Some(v) => { greeting = v; },
-                None => {
-                    if (i >= argv.len()) {
-                        return Err(i"option '{$ name $}' requires a value");
-                    }
-                    greeting = argv[i];
+            if (name == "help" or name == "version") {
+                if (has_value) {
+                    return Err(i"option '--{$ name $}' doesn't allow an argument");
+                }
+                st.opts.help = name == "help";
+                st.opts.version = name == "version";
+                return Ok(st.opts);
+            } else if (name == "unified") {
+                set_context(edits: st, if (has_value) { value } else { "3" })?;
+            } else if (name == "normal") {
+                if (has_value) {
+                    return Err("option '--normal' doesn't allow an argument");
+                }
+                set_style(edits: st, "normal")?;
+            } else if (name == "label") {
+                if (has_value) {
+                    add_label(edits: st, value)?;
+                } else if (i < argv.len()) {
+                    st.opts.switches.push(argv[i]);
+                    add_label(edits: st, argv[i])?;
                     i += 1;
-                },
+                } else {
+                    return Err("option '--label' requires an argument");
+                }
+            } else {
+                if (has_value) {
+                    return Err(i"option '--{$ name $}' doesn't allow an argument");
+                }
+                apply_flag(edits: st, long_flag_letter(name));
             }
             continue;
         }
 
-        if (inline_value.is_some()) {
-            return Err(i"option '{$ name $}' does not take a value");
-        }
-        if (name == "-h" or name == "--help") {
-            help = true;
-        } else if (name == "-V" or name == "--version") {
-            version = true;
-        } else if (name == "-v" or name == "--verbose") {
-            verbose = true;
-        } else if (name == "--shout") {
-            shout = true;
-        } else {
-            return Err(i"unknown option '{$ name $}'");
+        # A cluster of short options, such as -ru or -U3.
+        var j = 1;
+        while (j < arg.len()) {
+            let letter = arg.slice(j, j + 1);
+            j += 1;
+            if (letter == "u") {
+                set_style(edits: st, "unified")?;
+                if (st.opts.context < DEFAULT_CONTEXT) {
+                    st.opts.context = DEFAULT_CONTEXT;
+                }
+            } else if (letter == "U") {
+                var value = arg.slice(j);
+                j = arg.len();
+                if (value.len() == 0) {
+                    if (i >= argv.len()) {
+                        return Err("option requires an argument -- 'U'");
+                    }
+                    value = argv[i];
+                    st.opts.switches.push(value);
+                    i += 1;
+                }
+                set_context(edits: st, value)?;
+            } else if (!apply_flag(edits: st, letter)) {
+                return Err(i"invalid option -- '{$ letter $}'");
+            }
         }
     }
 
-    return Ok(Options(
-        command = command,
-        operands = operands,
-        help = help,
-        version = version,
-        verbose = verbose,
-        shout = shout,
-        greeting = greeting,
-    ));
+    let count = st.opts.operands.len();
+    if (count < 2) {
+        let last = if (argv.len() == 0) { APP_NAME } else { argv[argv.len() - 1] };
+        return Err(i"missing operand after '{$ last $}'");
+    }
+    if (count > 2) {
+        return Err(i"extra operand '{$ st.opts.operands[2] $}'");
+    }
+    return Ok(st.opts);
 }

@@ -1,0 +1,59 @@
+@mode(host.dual)
+
+from debug.assert import (expect, expectEq);
+from cli.args import (parse_args);
+from engine.lines import (split_text);
+from commands.compare import (changes_between, join_path, base_name, is_binary, is_utf8, same_bytes, new_report, compare_files, compare_dirs);
+
+func count(a: string, b: string, argv: list[string]): int {
+    var args = argv;
+    args.push("x");
+    args.push("y");
+    return changes_between(split_text(a), split_text(b), parse_args(args).unwrap()).len();
+}
+
+func test_ignore_options_change_the_result(): void {
+    let none: list[string] = [];
+    expectEq(count("A\n", "a\n", none), 1, "case matters by default");
+    expectEq(count("A\n", "a\n", ["-i"]), 0, "-i");
+    expectEq(count("a  b\n", "a b\n", ["-b"]), 0, "-b");
+    expectEq(count("a b\n", "ab\n", ["-b"]), 1, "-b keeps a space against none");
+    expectEq(count("a b\n", "ab\n", ["-w"]), 0, "-w");
+    expectEq(count("x", "x\n", none), 1, "a missing newline is a difference");
+    expectEq(count("x", "x\n", ["-b"]), 0, "but not under -b");
+}
+
+func test_paths(): void {
+    expectEq(join_path("dir", "f"), "dir/f", "join");
+    expectEq(join_path("dir/", "f"), "dir/f", "no double slash");
+    expectEq(base_name("a/b/c.txt"), "c.txt", "base name");
+    expectEq(base_name("a/b/"), "b", "trailing slash");
+    expectEq(base_name("plain"), "plain", "no directory");
+}
+
+func test_binary_and_utf8(): void {
+    let text = readBytes("tests/fixtures/old.txt");
+    expect(is_utf8(text) and !is_binary(text), "a text file");
+    expect(same_bytes(text, readBytes("tests/fixtures/old.txt")), "same bytes");
+    expect(!same_bytes(text, readBytes("tests/fixtures/new.txt")), "different bytes");
+}
+
+func test_compare_files_report(): void {
+    var r = new_report();
+    let opts = parse_args(["-q", "x", "y"]).unwrap();
+    compare_files(edits: r, opts, "tests/fixtures/old.txt", "tests/fixtures/new.txt", false);
+    expectEq(r.status, 1, "different");
+    expectEq(r.out.join(""), "Files tests/fixtures/old.txt and tests/fixtures/new.txt differ\n", "brief message");
+}
+
+func test_compare_dirs_report(): void {
+    var r = new_report();
+    let opts = parse_args(["-qr", "x", "y"]).unwrap();
+    compare_dirs(edits: r, opts, "tests/fixtures/tree1", "tests/fixtures/tree2");
+    let out = r.out.join("");
+    expectEq(r.status, 1, "different");
+    expect(out.index_of("Only in tests/fixtures/tree1: left.txt") >= 0, "only in the first");
+    expect(out.index_of("Only in tests/fixtures/tree2: right.txt") >= 0, "only in the second");
+    expect(out.index_of("tree1/sub/inner.txt and tests/fixtures/tree2/sub/inner.txt differ") >= 0, "recursed");
+    expect(out.index_of("same.txt") < 0, "identical files are not mentioned");
+}
