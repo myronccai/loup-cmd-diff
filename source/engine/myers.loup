@@ -29,6 +29,16 @@ pub struct Change {
     pub line1: int;
     pub deleted: int;
     pub inserted: int;
+
+    # The index just past the deleted lines in the first sequence.
+    func end0(): int {
+        return this.line0 + this.deleted;
+    }
+
+    # The index just past the inserted lines in the second sequence.
+    func end1(): int {
+        return this.line1 + this.inserted;
+    }
 }
 
 const OFFSET_MAX: int = 4611686018427387904;
@@ -81,11 +91,13 @@ class Analysis {
         this.fd = fd;
         this.bd = bd;
         this.doff = ny + 1;
+        # About the square root of the number of diagonals, as in GNU's
+        # `for (i = diags; i != 0; i >>= 2) too_expensive <<= 1;`.
         var expensive = 1;
         var d = diags;
         while (d != 0) {
-            expensive = expensive * 2;
-            d = d / 4;
+            expensive <<= 1;
+            d >>= 2;
         }
         this.too_expensive = if (expensive > 4096) { expensive } else { 4096 };
     }
@@ -273,10 +285,10 @@ func discard_marks(eq: list[int], other_counts: list[int]): list[int] {
     let end = eq.len();
     var many = 5;
     var tem = end / 64;
-    tem = tem / 4;
+    tem >>= 2;
     while (tem > 0) {
-        many *= 2;
-        tem = tem / 4;
+        many <<= 1;
+        tem >>= 2;
     }
     var marks: list[int] = [];
     for (i in 0..end) {
@@ -332,10 +344,10 @@ func settle_marks(edits marks: list[int]): void {
                 # subrun of MINIMUM or more provisionals.
                 var minimum = 1;
                 var t = length / 4;
-                t = t / 4;
+                t >>= 2;
                 while (t > 0) {
-                    minimum *= 2;
-                    t = t / 4;
+                    minimum <<= 1;
+                    t >>= 2;
                 }
                 minimum += 1;
                 var consec = 0;
@@ -443,9 +455,11 @@ pub func shift_boundaries(edits changed: list[bool], other: list[bool], equivs: 
             j += 1;
         }
 
+        # GNU's do/while: move the run back, then forward, until a round
+        # leaves its length unchanged (no more runs were merged into it).
         var corresponding = i_end;
         var runlength = 0;
-        while (true) {
+        do {
             runlength = i - start;
 
             # Move the run back while the line before it equals its last
@@ -482,10 +496,7 @@ pub func shift_boundaries(edits changed: list[bool], other: list[bool], equivs: 
                     j += 1;
                 }
             }
-            if (runlength == i - start) {
-                break;
-            }
-        }
+        } while (runlength != i - start);
 
         # Move the merged run back to line up with the other file if it can.
         while (corresponding < i) {

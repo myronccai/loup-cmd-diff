@@ -65,3 +65,12 @@ func test_compare_dirs_report(): void {
     expect(out.index_of("tree1/sub/inner.txt and tests/fixtures/tree2/sub/inner.txt differ") >= 0, "recursed");
     expect(out.index_of("same.txt") < 0, "identical files are not mentioned");
 }
+
+# Inside a directory comparison each differing pair is introduced by
+# `diff OPTIONS FILE1 FILE2`, with the options as they were given.
+func test_dir_header_repeats_the_options(): void {
+    var r = new_report();
+    let opts = parse_args(["-r", "-U", "1", "tests/fixtures/tree1", "tests/fixtures/tree2"]).unwrap();
+    compare_dirs(edits: r, opts, "tests/fixtures/tree1", "tests/fixtures/tree2");
+    expect(r.out.join("").index_of("diff -r -U 1 tests/fixtures/tree1/sub/inner.txt tests/fixtures/tree2/sub/inner.txt\n") >= 0, "header");
+}

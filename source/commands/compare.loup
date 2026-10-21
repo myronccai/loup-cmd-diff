@@ -196,12 +196,7 @@ pub func compare_files(edits r: Report, opts: Options, path0: string, path1: str
         return;
     }
     if (in_dir) {
-        var words = ["diff"];
-        for (s in opts.switches) {
-            words.push(s);
-        }
-        words.push(path0);
-        words.push(path1);
+        let words: list[string] = ["diff"] + opts.switches + [path0, path1];
         r.out.push(words.join(" ") + "\n");
     }
     for (piece in render_changes(a, b, changes, opts, path0, path1)) {

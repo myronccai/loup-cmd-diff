@@ -35,7 +35,11 @@ pub func normal_range(first: int, count: int): string {
 
 # The command line of a normal-format hunk: `2,3c2`, `5a6,7`, `4d3`.
 pub func normal_command(c: Change): string {
-    let letter = if (c.deleted == 0) { "a" } else if (c.inserted == 0) { "d" } else { "c" };
+    let letter = match (c.deleted, c.inserted) {
+        (0, _) => "a",
+        (_, 0) => "d",
+        _ => "c",
+    };
     return normal_range(c.line0, c.deleted) + letter + normal_range(c.line1, c.inserted);
 }
 
@@ -43,13 +47,13 @@ pub func normal_output(a: Text, b: Text, changes: list[Change]): list[string] {
     var out: list[string] = [];
     for (c in changes) {
         out.push(normal_command(c) + "\n");
-        for (k in c.line0..c.line0 + c.deleted) {
+        for (k in c.line0..c.end0()) {
             emit_line(edits: out, "< ", a, k);
         }
         if (c.deleted > 0 and c.inserted > 0) {
             out.push("---\n");
         }
-        for (k in c.line1..c.line1 + c.inserted) {
+        for (k in c.line1..c.end1()) {
             emit_line(edits: out, "> ", b, k);
         }
     }
@@ -77,7 +81,7 @@ pub func unified_range(first: int, last: int): string {
 pub func hunk_end(changes: list[Change], first: int, context: int): int {
     var k = first;
     while (k + 1 < changes.len()) {
-        let top0 = changes[k].line0 + changes[k].deleted;
+        let top0 = changes[k].end0();
         if (changes[k + 1].line0 - top0 >= 2 * context + 1) {
             break;
         }
@@ -99,8 +103,8 @@ pub func unified_output(a: Text, b: Text, changes: list[Change], context: int, l
         let tail = changes[e];
         let first0 = if (head.line0 - context > 0) { head.line0 - context } else { 0 };
         let first1 = if (head.line1 - context > 0) { head.line1 - context } else { 0 };
-        var last0 = tail.line0 + tail.deleted - 1;
-        var last1 = tail.line1 + tail.inserted - 1;
+        var last0 = tail.end0() - 1;
+        var last1 = tail.end1() - 1;
         last0 = if (last0 < n0 - context) { last0 + context } else { n0 - 1 };
         last1 = if (last1 < n1 - context) { last1 + context } else { n1 - 1 };
         out.push(i"@@ -{$ unified_range(first0, last0) $} +{$ unified_range(first1, last1) $} @@" + "\n");
@@ -116,11 +120,11 @@ pub func unified_output(a: Text, b: Text, changes: list[Change], context: int, l
                 j += 1;
             } else {
                 let c = changes[next];
-                for (k in 0..c.deleted) {
+                for (_ in 0..c.deleted) {
                     emit_line(edits: out, "-", a, i);
                     i += 1;
                 }
-                for (k in 0..c.inserted) {
+                for (_ in 0..c.inserted) {
                     emit_line(edits: out, "+", b, j);
                     j += 1;
                 }
