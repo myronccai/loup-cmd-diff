@@ -1,5 +1,13 @@
 @mode(host.dual)
 
+# Unit tests for diff's command-line parsing (source/cli/args.loup):
+# defaults, short clusters, -u/-U context, labels, long-option prefixes,
+# usage errors and parse_count.
+#
+# Runtime: host.dual, run by the test runner: `make test` interprets this file
+# with Stage0 (`loup-bootstrap test`, source/ on LOUPPATH), one test per
+# `func test_*()`. It is not part of the binary.
+
 from debug.assert import (expect, expectEq);
 from cli.args import (parse_args, parse_count, resolve_long);
 

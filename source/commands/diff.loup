@@ -1,7 +1,12 @@
 @mode(host.dual)
 
 # diff: resolves the two operands (files, directories or "-" for standard
-# input), compares them, and prints the report.
+# input), compares them, and prints the report. The only module under
+# commands/ that prints.
+#
+# Runtime: host.dual. Compiled into the native binary build/diff by
+# `make build`; `loup run source/main.loup` interprets the same code. The
+# e2e tests (`make e2e`) exercise it through the binary.
 
 from appinfo import (APP_NAME);
 from cli.args import (Options);

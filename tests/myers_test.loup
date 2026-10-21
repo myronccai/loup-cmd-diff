@@ -1,5 +1,13 @@
 @mode(host.dual)
 
+# Unit tests for the difference algorithm (source/engine/myers.loup), on
+# sequences of class numbers: shortest scripts, hunk placement and
+# shift_boundaries.
+#
+# Runtime: host.dual, run by the test runner: `make test` interprets this file
+# with Stage0 (`loup-bootstrap test`, source/ on LOUPPATH), one test per
+# `func test_*()`. It is not part of the binary.
+
 from debug.assert import (expect, expectEq);
 from engine.myers import (Change, diff_sequences, shift_boundaries);
 

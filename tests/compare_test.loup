@@ -1,5 +1,13 @@
 @mode(host.dual)
 
+# Unit tests for file and directory comparison
+# (source/commands/compare.loup): the -i/-w/-b rules, path helpers, binary
+# detection and the Reports for fixture files and directories.
+#
+# Runtime: host.dual, run by the test runner: `make test` interprets this file
+# with Stage0 (`loup-bootstrap test`, source/ on LOUPPATH), one test per
+# `func test_*()`. It is not part of the binary.
+
 from debug.assert import (expect, expectEq);
 from cli.args import (parse_args);
 from engine.lines import (split_text);

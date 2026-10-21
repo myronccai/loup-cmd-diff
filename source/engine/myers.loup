@@ -12,6 +12,15 @@
 #
 # Sequences are lists of equivalence classes (see engine.lines): two lines
 # are equal when their numbers are equal.
+#
+# Runtime: host.dual. Compiled into the native binary build/diff by
+# `make build`; `loup run source/main.loup` interprets the same code, and
+# tests/myers_test.loup exercises it under Stage0 (`make test`).
+#
+# Structure: the steps are, in file order, the Analysis class (step 3:
+# diag, best_guess, compareseq), discard_marks and settle_marks (step 2),
+# shift_boundaries (step 4) and build_script (step 5). diff_sequences, at
+# the end, does step 1 itself and then runs the others in order.
 
 # One difference: `deleted` lines of the first sequence starting at index
 # `line0` were replaced by `inserted` lines of the second starting at `line1`.
@@ -45,6 +54,9 @@ class Analysis {
     # line k is at index k + 1.
     pub var changed0: list[bool] = [];
     pub var changed1: list[bool] = [];
+    # fd[d + doff] is the furthest x the forward search has reached on
+    # diagonal d = x - y, bd[d + doff] the smallest x of the backward
+    # search; doff shifts negative diagonals to valid indexes.
     var fd: list[int] = [];
     var bd: list[int] = [];
     var doff: int = 0;

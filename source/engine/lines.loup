@@ -1,8 +1,13 @@
 @mode(host.dual)
 
-# Turning file contents into comparable lines. Each line gets a key (the text
-# as the -i, -w and -b options see it), and equal keys share one small integer,
-# the line's equivalence class, which is all the diff algorithm compares.
+# Turning file contents into comparable lines. Each line gets a key (the
+# text as the -i, -w and -b options see it), and equal keys share one small
+# integer, the line's equivalence class, which is all the diff algorithm
+# compares.
+#
+# Runtime: host.dual. Compiled into the native binary build/diff by
+# `make build`; `loup run source/main.loup` interprets the same code, and
+# tests/lines_test.loup exercises it under Stage0 (`make test`).
 
 # The lines of a file, without their newlines, and whether the last line
 # lacked one ("\ No newline at end of file").

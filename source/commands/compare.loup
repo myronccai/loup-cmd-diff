@@ -3,6 +3,16 @@
 # Comparing a pair of files, or a pair of directories entry by entry. The
 # results go into a Report (standard output pieces, error lines and the exit
 # status) instead of being printed, so tests can inspect them.
+#
+# Runtime: host.dual. Compiled into the native binary build/diff by
+# `make build`; `loup run source/main.loup` interprets the same code, and
+# tests/compare_test.loup exercises it under Stage0 (`make test`).
+#
+# Structure: byte-level checks first (identical bytes, NUL or invalid UTF-8
+# means binary), then the text path: engine.lines turns each file into
+# equivalence classes, engine.myers finds the changes and engine.format
+# renders them. compare_dirs merges the two sorted directory listings and
+# calls compare_entry for names on both sides, which recurses under -r.
 
 from appinfo import (EXIT_SAME, EXIT_DIFFERENT, EXIT_TROUBLE);
 from cli.args import (Options);
